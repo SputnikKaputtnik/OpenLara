@@ -3,6 +3,10 @@ OBJS   = main.o ../../libs/stb_vorbis/stb_vorbis.o
 
 INCDIR   = ../../
 CFLAGS   = -G0 -O3
+# make DEVTOOLS=1: perf.log, boot.log and the psplink auto test (see devtools.h)
+ifeq ($(DEVTOOLS),1)
+CFLAGS  += -DPSP_DEVTOOLS
+endif
 CXXFLAGS = $(CFLAGS) -fno-exceptions -fno-rtti -Wno-invalid-offsetof
 ASFLAGS  = $(CFLAGS)
 

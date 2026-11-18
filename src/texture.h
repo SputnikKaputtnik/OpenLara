@@ -15,10 +15,62 @@ struct Texture : GAPI::Texture {
                 this->tiles = tiles;
             }
         #elif defined(_GAPI_GU)
-            Tile4 *tiles;
-            CLUT  *cluts;
+            Tile4     *tiles;
+            CLUT      *cluts;
+            Tile8     *tiles8;   // TR1 PC levels only (NULL for PSX levels)
+            ColorCLUT *pal8;     // 3 x 256 entries: [0..255] normal, [256..511] underwater, [512..767] white
+
+            // clut values on the PC path: 0 = normal, +512 = underwater (set by mesh.h), >= CLUT8_WHITE = white palette
+            enum { CLUT8_WHITE = 1024 };
+
+            // TR1 PC: 8-bit tiles + palette -> GU_PSM_T8. Tiles go to eDRAM if they fit, otherwise to RAM.
+            Texture(Tile8 *src, int tilesCount, const ::Color24 *palette, const vec3 &waterColor) : GAPI::Texture(256, 256, 1, OPT_PROXY), tiles(NULL), cluts(NULL) {
+                int tilesSize = tilesCount * sizeof(Tile8);
+                int palSize   = 3 * 256 * sizeof(ColorCLUT);
+
+                if (GAPI::freeEDRAMSize() >= tilesSize + palSize + 32) {
+                    tiles8 = (Tile8*)GAPI::allocEDRAM(tilesSize);
+                    pal8   = (ColorCLUT*)GAPI::allocEDRAM(palSize);
+                    LOG("PC tiles: %d -> eDRAM (%d KB)\n", tilesCount, tilesSize / 1024);
+                } else {
+                    tiles8 = (Tile8*)memalign(16, tilesSize);
+                    pal8   = (ColorCLUT*)memalign(16, palSize);
+                    LOG("PC tiles: %d -> RAM (%d KB, eDRAM free %d)\n", tilesCount, tilesSize / 1024, GAPI::freeEDRAMSize());
+                }
+
+                for (int i = 0; i < tilesCount; i++) {
+                #ifdef TEX_SWIZZLE
+                    swizzle((uint8*)&tiles8[i], (uint8*)&src[i], width, height); // 8 bpp: 256 bytes per row
+                #else
+                    memcpy(&tiles8[i], &src[i], sizeof(Tile8));
+                #endif
+                }
+
+                for (int i = 0; i < 256; i++) {
+                    const ::Color24 &c = palette[i];
+                    ColorCLUT &n = pal8[i];
+                    ColorCLUT &w = pal8[256 + i];
+                    n.r = c.r >> 3;
+                    n.g = c.g >> 3;
+                    n.b = c.b >> 3;
+                    n.a = (i == 0) ? 0 : 1; // index 0 = transparent (as in fillObjectTexture for TR1 PC)
+                    w.r = int(c.r * waterColor.x) >> 3;
+                    w.g = int(c.g * waterColor.y) >> 3;
+                    w.b = int(c.b * waterColor.z) >> 3;
+                    w.a = n.a;
+                    // index 0 must be fully zero (like the transparent PSX CLUT entry): UI text is drawn with
+                    // premultiplied alpha (ONE, 1-SRC_ALPHA), a color with alpha 0 would still be added
+                    // (magenta boxes behind the subtitles)
+                    if (i == 0) n.value = w.value = 0;
+                    // white for TR1 PC colored faces: the texel is irrelevant, the color comes from the vertex
+                    pal8[512 + i].value = 0xFFFF;
+                }
+                sceKernelDcacheWritebackRange(tiles8, tilesSize);
+                sceKernelDcacheWritebackRange(pal8, palSize);
+            }
+
 		// TODO: PSP depth ??
-            Texture(Tile4 *tiles, int tilesCount, CLUT *cluts, int clutsCount) : GAPI::Texture(256, 256, 1, OPT_PROXY) {
+            Texture(Tile4 *tiles, int tilesCount, CLUT *cluts, int clutsCount) : GAPI::Texture(256, 256, 1, OPT_PROXY), tiles8(NULL), pal8(NULL) {
                 #ifdef EDRAM_TEX
                     this->tiles = (Tile4*)GAPI::allocEDRAM(tilesCount * sizeof(tiles[0]));
                     this->cluts =  (CLUT*)GAPI::allocEDRAM(clutsCount * sizeof(cluts[0]));
@@ -56,7 +108,10 @@ struct Texture : GAPI::Texture {
         #if defined(_GAPI_SW)
             bindTileIndices(tiles + tile);
         #elif defined(_GAPI_GU)
-            bindTileCLUT(tiles + tile, cluts + clut);
+            if (tiles8)
+                bindTileCLUT8(tiles8 + tile, pal8 + (clut >= CLUT8_WHITE ? 512 : (clut >= 512 ? 256 : 0))); // +512 = underwater (mesh.h)
+            else
+                bindTileCLUT(tiles + tile, cluts + clut);
         #else
             tiles[tile]->bind(0);
         #endif

@@ -3219,8 +3219,9 @@ namespace TR {
         #endif
 
         #ifdef _GAPI_GU
-            ASSERT((version & VER_TR1_PSX) == VER_TR1_PSX);
-            if ((version & VER_TR1_PSX) != VER_TR1_PSX) {
+            // PSP: TR1 PSX levels (4-bit tiles + CLUTs) or TR1 PC levels (8-bit tiles + palette, GU_PSM_T8)
+            ASSERT(version == VER_TR1_PSX || version == VER_TR1_PC);
+            if (version != VER_TR1_PSX && version != VER_TR1_PC) {
                 return;
             }
         #endif

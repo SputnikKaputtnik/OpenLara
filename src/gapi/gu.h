@@ -5,6 +5,8 @@
 
 #include <pspgu.h>
 #include <pspgum.h>
+#include <pspkernel.h>
+#include <malloc.h>
 
 #define PROFILE_MARKER(title)
 #define PROFILE_LABEL(id, name, label)
@@ -109,6 +111,16 @@ namespace GAPI {
             sceGuTexImage(0, width, height, width, tile);
         }
 
+        // TR1 PC: 8-bit indexed tile, 256-entry RGBA5551 palette (= 16 blocks of 32 bytes)
+        void bindTileCLUT8(void *tile, void *palette) {
+            ASSERT(tile);
+            ASSERT(palette);
+
+            sceGuTexMode(GU_PSM_T8, 0, 0, getSwizzle());
+            sceGuClutLoad(256 * 2 / 32, palette);
+            sceGuTexImage(0, width, height, width, tile);
+        }
+
         void unbind(int sampler) {}
 
         void setFilterQuality(int value) {
@@ -173,7 +185,12 @@ namespace GAPI {
 
                 for (int i = 0; i < vCount; i++) {
                     dst->texCoord = short2(src->texCoord.x, src->texCoord.y);
-                    dst->color    = ubyte4(src->light.x, src->light.y, src->light.z, src->light.w); //color;
+                    // face color x vertex light (no shader in FFP). Textured faces have color = white,
+                    // TR1 PC colored faces (e.g. Lara's skin) need the color.
+                    dst->color    = ubyte4((src->light.x * src->color.x + 127) / 255,
+                                           (src->light.y * src->color.y + 127) / 255,
+                                           (src->light.z * src->color.z + 127) / 255,
+                                           (src->light.w * src->color.w + 127) / 255);
                     dst->normal   = src->normal;
                     dst->coord    = src->coord;
 
@@ -181,6 +198,11 @@ namespace GAPI {
                     src++;
                 }
             }
+
+            // the GE reads vertex/index data straight from RAM while the CPU keeps running;
+            // flush the data cache so it never sees stale buffers
+            if (iBuffer && indices)  sceKernelDcacheWritebackRange(iBuffer, iCount * sizeof(Index));
+            if (vBuffer && vertices) sceKernelDcacheWritebackRange(vBuffer, vCount * sizeof(Vertex));
         }
 
         void bind(const MeshRange &range) const {}
@@ -194,6 +216,7 @@ namespace GAPI {
     int cullMode, blendMode;
 
     uint32 *cmdBuf = NULL;
+    enum { CMD_BUF_SIZE = 262144 * 4 };
     void   *curBackBuffer;
 
     static int EDRAM_OFFSET;
@@ -214,9 +237,19 @@ namespace GAPI {
         LOG("EDRAM FREE: offset: %d\n", EDRAM_OFFSET);
     }
 
+    int freeEDRAMSize() {
+        return EDRAM_SIZE - EDRAM_OFFSET;
+    }
+
     void beginCmdBuf() {
-        if (!cmdBuf)
-            cmdBuf = new uint32[262144];
+        if (!cmdBuf) {
+            // libpspgu writes the display list through the uncached mirror (| 0x40000000). Dirty data
+            // cache lines left over from earlier heap use would later be written back over the commands
+            // and the GE executes garbage (crash at the first sceGuFinish when started from the XMB).
+            // Align the buffer to cache lines and drop any cached lines covering it.
+            cmdBuf = (uint32*)memalign(64, CMD_BUF_SIZE);
+            sceKernelDcacheWritebackInvalidateRange(cmdBuf, CMD_BUF_SIZE);
+        }
         sceGuStart(GU_DIRECT, cmdBuf);
     }
 
@@ -296,7 +329,7 @@ namespace GAPI {
     }
 
     void deinit() {
-        delete[] cmdBuf;
+        free(cmdBuf);
     }
 
     inline mat4::ProjRange getProjRange() {
@@ -381,7 +414,10 @@ namespace GAPI {
     
     // from other gapi, could be improved??
     void setScissor(const short4 &s) {
-        sceGuScissor(s.x, Core::viewportDef.w - (s.y + s.w), s.x + s.z, Core::viewportDef.w - s.y);
+        // sceGuScissor takes x, y, width, height (libpspgu: stop = start + size - 1). Passing the end
+        // coordinates made the scissor reach below line 272, so the GE wrote color/depth past the
+        // depth buffer into the textures stored in eDRAM.
+        sceGuScissor(s.x, Core::viewportDef.w - (s.y + s.w), s.z, s.w);
     }
 
     void setDepthTest(bool enable) {

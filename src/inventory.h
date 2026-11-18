@@ -424,6 +424,9 @@ struct Inventory {
                     optCount = COUNT(optSound);
                     return optSound;
                 case TR::Entity::INV_CONTROLS : {
+                #ifdef _OS_PSP
+                    Core::settings.ctrlIndex = 1; // no keyboard (an older settings file may still say so)
+                #endif
                     for (int i = 0; i < COUNT(optControls); i++) {
                         OptionItem &opt = optControlsPlayer[i];
                         opt = optControls[i];
@@ -958,6 +961,7 @@ struct Inventory {
     }
 
     float getAngle(int index, int count) {
+        if (count <= 0) return 0.0f; // empty page: the PSP FPU traps on division by zero
         return PI * 2.0f / float(count) * index;
     }
 
@@ -2084,6 +2088,9 @@ struct Inventory {
             #if defined(_OS_SWITCH) || defined(_OS_3DS) || defined(_OS_GCW0) || defined(_OS_XBOX) || defined(_OS_XB1)
                 bSelect = "A";
                 bBack   = "B";
+            #elif defined(_OS_PSP)
+                bSelect = "CROSS";  // jkA (platform/psp/main.cpp)
+                bBack   = "CIRCLE"; // jkB
             #endif
 
             sprintf(buf, STR[STR_HELP_SELECT], bSelect);
