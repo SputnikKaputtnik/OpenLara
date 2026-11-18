@@ -22,8 +22,23 @@ Hold L while the game starts to choose a level directly.
 ## Music
 
 The PSP build plays OGG files only, and they must be **44100 Hz stereo** (the decoder does not resample).
-The Steam/GOG release ships the CD audio tracks 2-10 as `02.mp3` ... `10.mp3`. Convert them and name
-them after the game's track numbers:
+Files are named after the game's track numbers: `track_02.ogg` ... `track_60.ogg`, next to `EBOOT.PBP`.
+
+`tools/make_music.py` builds them from your own discs (needs Python 3 and ffmpeg):
+
+    python make_music.py --pc "<Steam>/steamapps/common/Tomb Raider (I)" --psx tr1.cue music
+
+- `--pc`: the Steam/GOG release ships CD audio tracks 2-10 (`02.mp3` ... `10.mp3`): title, level ambience
+  and cutscenes.
+- `--psx`: the PlayStation disc has the complete soundtrack as CD audio, track N = game track N (2-57):
+  the music cues that triggers start during play, the secret jingle, Lara's Home voice and the cistern
+  ambience. Use the cue sheet of a bin/cue rip, or extract a CHD image first with
+  `chdman extractcd -i game.chd -o tr1.cue`.
+
+With both sources you get all 59 tracks (about 24 MB). The PC files are used where both have the
+same music (game tracks 2, 5, 22-25); the ambience tracks 58-60 exist only on the PC disc.
+
+Manual conversion of the PC tracks is also possible:
 
 | CD track | file name     |
 |----------|---------------|
@@ -39,8 +54,10 @@ them after the game's track numbers:
 
 Example with ffmpeg: `ffmpeg -i 03.mp3 -c:a libvorbis -q:a 3 -ar 44100 -ac 2 track_05.ogg`
 
-The short music cues that triggers start during play (game tracks 11-57) are not part of these CD tracks;
-those triggers stay silent.
+Without the PlayStation tracks the music cues, the secret jingle and Lara's Home voice stay silent.
+
+Tested on a PSP-1000 with the Steam tracks plus the tracks of the US PlayStation disc (Rev 2).
+That PSX track N = game track N was checked by comparing the PC and PSX versions of tracks 5 and 22.
 
 ## Building
 
