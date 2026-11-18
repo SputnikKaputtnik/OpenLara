@@ -146,6 +146,14 @@ namespace Dev {
         float       frameMaxAt   = 0.0f;
         char        pending[512];         // log text collected during a level, written at its end
         u64         excluded     = 0;     // time spent writing screenshots (not part of the measurement)
+        int         levelStartMS = 0;     // osGetTimeMS() at the level start, for other log entries
+        bool        slowShot     = false; // screenshot after the first frame > 50 ms taken
+        // parts of the current main loop pass (main.cpp): gap = end of the previous pass (incl. Dev::frame)
+        // to this start, work, vblank wait, buffer swap; copied for the longest frame
+        u64         curGap, curWork, curVBlank, curSwap, prevEnd = 0;
+        u64         maxGap, maxWork, maxVBlank, maxSwap;
+        u64         audioMax     = 0;     // longest Sound::fill() in the audio thread
+        int         audioMaxMS   = 0;     // osGetTimeMS() when it ended
         bool        titleDone    = false;
         u64         titleT       = 0;
         int         cur          = 0;
@@ -180,6 +188,42 @@ namespace Dev {
             shotsTaken = 0;
             tourStep = tourRoom = frameMaxRoom = -1;
             excluded = 0;
+            slowShot = false;
+            audioMax = 0;
+        }
+
+        static void copyFile(const char *src, const char *dst) {
+            FILE *in = fopen(src, "rb");
+            if (!in) return;
+            FILE *out = fopen(dst, "wb");
+            if (out) {
+                static char buf[16 * 1024];
+                size_t n;
+                while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+                    fwrite(buf, 1, n, out);
+                fclose(out);
+            }
+            fclose(in);
+        }
+
+        // End of the test: put the results on the PC (host0, psplink) and write autotest_done.txt last,
+        // so a watcher on the PC knows the game has ended and no psplink command can collide with it.
+        // Runs after the measurement, so slow memory stick / USB writes do not matter here.
+        void handOver() {
+            if (bootToFile) { // started from ms0: results are on the memory stick
+                copyFile("autotest.log", "host0:/openlara/autotest_ms0.log");
+                for (int i = 0; i < COUNT; i++) {
+                    char src[48], dst[80];
+                    snprintf(src, sizeof(src), "at_%s_slow.bmp", TR::LEVEL_INFO[LEVELS[i]].name);
+                    snprintf(dst, sizeof(dst), "host0:/openlara/%s", src);
+                    copyFile(src, dst);
+                }
+            }
+            FILE *f = fopen("host0:/openlara/autotest_done.txt", "wb");
+            if (f) {
+                fputs("done\n", f);
+                fclose(f);
+            }
         }
 
         // log text collected during the measurement, written at the end of the level
@@ -309,6 +353,7 @@ namespace Dev {
             if (!lastT) {
                 loadSecs = levelStart ? ms(t - levelStart) / 1000.0f : 0.0f;
                 levelStart = lastT = tPattern = t;
+                levelStartMS = osGetTimeMS();
                 return;
             }
 
@@ -367,8 +412,19 @@ namespace Dev {
                     frameMax     = frameTime;
                     frameMaxRoom = lara ? lara->getRoomIndex() : -1;
                     frameMaxAt   = elapsed;
+                    maxGap = curGap; maxWork = curWork; maxVBlank = curVBlank; maxSwap = curSwap;
                 }
                 if (ms(frameTime) > 25.0f) slow++;
+                // picture of what is on screen right after the first long frame
+                if (ms(frameTime) > 50.0f && !slowShot) {
+                    char name[48];
+                    snprintf(name, sizeof(name), "at_%s_slow.bmp", TR::LEVEL_INFO[want].name);
+                    saveShot(name);
+                    slowShot = true;
+                    u64 now = tick();
+                    excluded += now - t;
+                    lastT = now;
+                }
             }
 
             if (elapsed >= float(secsPerLevel)) {
@@ -382,7 +438,10 @@ namespace Dev {
                 line("%-12s %5.1fs %5.1f %8.2fms %8.2fms %8.2fms %5d %8d\n",
                     TR::LEVEL_INFO[want].name, loadSecs, frames / secs,
                     frames ? ms(workSum) / frames : 0.0f, ms(workMax), ms(frameMax), slow, mi.uordblks / 1024);
-                line("  frame max at %.1fs in room %d", frameMaxAt, frameMaxRoom);
+                line("  audio fill max %.2f ms, ended at %.2fs\n", ms(audioMax), (audioMaxMS - levelStartMS) / 1000.0f);
+                line("  frame max parts: gap %.2f, work %.2f, vblank wait %.2f, swap %.2f ms\n",
+                    ms(maxGap), ms(maxWork), ms(maxVBlank), ms(maxSwap));
+                line("  frame max ends at %.2fs in room %d", frameMaxAt, frameMaxRoom);
                 if (tour)
                     line(", tour: %d rooms, %d stops", Game::level->level.roomsCount, tourStep + 1);
                 line("\n");
@@ -393,6 +452,7 @@ namespace Dev {
                 if (cur >= COUNT) {
                     line("=== AUTOTEST end: %d levels ===\n", COUNT);
                     active = false;
+                    handOver();
                     Core::quit();
                 } else if (viaTitle) {
                     titleDone = false;
@@ -428,6 +488,24 @@ namespace Dev {
     }
 
 // interface used by main.cpp
+
+    void loopTimes(u64 t0, u64 t1, u64 t2, u64 t3) {
+        AutoTest::curGap    = AutoTest::prevEnd ? t0 - AutoTest::prevEnd : 0;
+        AutoTest::curWork   = t1 - t0;
+        AutoTest::curVBlank = t2 - t1;
+        AutoTest::curSwap   = t3 - t2;
+        AutoTest::prevEnd   = t3;
+    }
+
+    // audio thread: duration of one Sound::fill() (only measured after the first 2 s of a level)
+    void audioFill(u64 d) {
+        if (!AutoTest::active || !AutoTest::levelStartMS || !AutoTest::lastT) return;
+        if (osGetTimeMS() - AutoTest::levelStartMS < 2000) return;
+        if (d > AutoTest::audioMax) {
+            AutoTest::audioMax   = d;
+            AutoTest::audioMaxMS = osGetTimeMS();
+        }
+    }
     void init(int argc, char *argv[]) {
         if (argc > 0 && argv[0] && !strncmp(argv[0], "ms0:", 4)) {
             bootToFile = true;
@@ -461,7 +539,8 @@ namespace Dev {
         if (!AutoTest::noPerf) Perf::frame(work, t);
         AutoTest::frame(work, t);
         frameNo++;
-        if (frameNo <= 3 || frameNo == 60 || frameNo == 600)
+        // boot.log is written synchronously (~75 ms on the memory stick): not during an auto test measurement
+        if (!AutoTest::active && (frameNo <= 3 || frameNo == 60 || frameNo == 600))
             mark("boot: frame %d, level %s\n", frameNo, Game::level ? TR::LEVEL_INFO[Game::level->level.id].name : "-");
     }
 
@@ -479,6 +558,14 @@ namespace Dev {
 void devTrackLog(int track, int ms, bool playing) {
     if (Dev::AutoTest::active)
         Dev::AutoTest::note("  music track %d: %d ms, %s\n", track, ms, playing ? "playing" : "not found");
+}
+
+// times relative to the level start of the auto test (same clock as "frame max at")
+void devTrackTimes(int requested, int started, int done) {
+    if (!Dev::AutoTest::active) return;
+    int base = Dev::AutoTest::levelStartMS;
+    Dev::AutoTest::note("    requested %.2fs, thread started %.2fs, done %.2fs\n",
+        (requested - base) / 1000.0f, (started - base) / 1000.0f, (done - base) / 1000.0f);
 }
 
 #endif

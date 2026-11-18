@@ -119,6 +119,8 @@ void joyInit() {
         inline void started()                  {}
         inline u64  tick()                     { return 0; }
         inline void frame(u64, u64)            {}
+        inline void audioFill(u64)             {}
+        inline void loopTimes(u64, u64, u64, u64) {}
         inline void shutdown()                 {}
     }
     #define DEV_MARK(...)
@@ -149,7 +151,9 @@ void joyUpdate() {
 }
 
 void sndFill(void* buf, unsigned int length, void *userdata) {
+    u64 t0 = Dev::tick();
     Sound::fill((Sound::Frame*)buf, length);
+    Dev::audioFill(Dev::tick() - t0);
 }
 
 void sndInit() {
@@ -377,8 +381,11 @@ int main(int argc, char *argv[]) {
         GAPI::submitCmdBuf();
         u64 t1 = Dev::tick();
         Core::waitVBlank();
+        u64 t2 = Dev::tick();
         GAPI::curBackBuffer = sceGuSwapBuffers();
-        Dev::frame(t1 - t0, Dev::tick());
+        u64 t3 = Dev::tick();
+        Dev::loopTimes(t0, t1, t2, t3);
+        Dev::frame(t1 - t0, t3);
     }
 
     Dev::shutdown();

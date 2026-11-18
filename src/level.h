@@ -37,6 +37,7 @@ extern int loadSlot;
 
 #ifdef PSP_DEVTOOLS
 void devTrackLog(int track, int ms, bool playing); // platform/psp/devtools.h
+void devTrackTimes(int requested, int started, int done); // osGetTimeMS() values
 #endif
 
 struct Level : IGame {
@@ -965,8 +966,8 @@ struct Level : IGame {
 
     struct TrackJob {
         Level *level;
-        int   track, flags;
-        TrackJob(Level *level, int track, int flags) : level(level), track(track), flags(flags) {}
+        int   track, flags, requested;
+        TrackJob(Level *level, int track, int flags) : level(level), track(track), flags(flags), requested(osGetTimeMS()) {}
     };
 
     static int trackThreadFunc(SceSize args, void *argp) {
@@ -977,6 +978,7 @@ struct Level : IGame {
         TR::getGameTrack(job->level->level.version, job->track, playAsync, new TrackRequest(job->level, job->flags));
     #ifdef PSP_DEVTOOLS
         devTrackLog(job->track, osGetTimeMS() - t0, job->level->sndTrack != NULL);
+        devTrackTimes(job->requested, t0, osGetTimeMS());
     #endif
         delete job;
         return 0;
